@@ -48,16 +48,16 @@ void handleMqttCommand(String payload) {
     }
 }
 
-// Callback 3: Resultado da autenticação Challenge-Response via BLE
-void handleBleAuth(bool authorized) {
+// Callback 3: Resultado da autenticação Challenge-Response multi-usuário via BLE
+void handleBleAuth(bool authorized, const String& userId) {
     if (authorized) {
-        Serial.println("[ACESSO] Challenge-Response BLE valido! Acionando rele...");
+        Serial.printf("[ACESSO] BLE autorizado para [%s]! Acionando rele...\n", userId.c_str());
         hardware.unlock();
-        mqtt.publishEvent("{\"metodo\":\"BLE_HMAC\",\"status\":\"AUTORIZADO\"}");
+        mqtt.publishEvent("{\"metodo\":\"BLE_HMAC\",\"usuario\":\"" + userId + "\",\"status\":\"AUTORIZADO\"}");
     } else {
-        Serial.println("[ACESSO] Falha na autenticacao BLE!");
-        hardware.showMessage("ACESSO NEGADO", "Falha Auth BLE");
-        mqtt.publishEvent("{\"metodo\":\"BLE_HMAC\",\"status\":\"NEGADO\"}");
+        Serial.printf("[ACESSO] Falha BLE para [%s]!\n", userId.c_str());
+        hardware.showMessage("ACESSO NEGADO", "User: " + userId);
+        mqtt.publishEvent("{\"metodo\":\"BLE_HMAC\",\"usuario\":\"" + userId + "\",\"status\":\"NEGADO\"}");
     }
 }
 

@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 
-typedef void (*BleAuthCallback)(bool authorized);
+typedef void (*BleAuthCallback)(bool authorized, const String& userId);
 
 class BleManager {
 public:

@@ -5,19 +5,17 @@
 #include "esp_system.h"
 
 static NimBLEServer* pServer = nullptr;
-static NimBLECharacteristic* pTxCharacteristic = nullptr; // Envia o Nonce
-static NimBLECharacteristic* pRxCharacteristic = nullptr; // Recebe o HMAC
+static NimBLECharacteristic* pTxCharacteristic = nullptr;
+static NimBLECharacteristic* pRxCharacteristic = nullptr;
 static BleAuthCallback globalAuthCallback = nullptr;
 
 static bool deviceConnected = false;
 static bool oldDeviceConnected = false;
 
-// Estado do desafio atual (uso único)
 static String currentNonce = "";
 static unsigned long nonceCreatedAt = 0;
 static bool nonceActive = false;
 
-// Gera 16 bytes aleatórios via hardware RNG e converte para 32 chars HEX
 static String generateHexNonce() {
     uint8_t randomBytes[16];
     esp_fill_random(randomBytes, sizeof(randomBytes));
@@ -30,7 +28,6 @@ static String generateHexNonce() {
     return String(hexStr);
 }
 
-// Calcula HMAC-SHA256 usando mbedTLS nativo do ESP32
 static String computeHmacSha256(const String& key, const String& data) {
     uint8_t hmacResult[32];
     mbedtls_md_context_t ctx;
@@ -51,7 +48,6 @@ static String computeHmacSha256(const String& key, const String& data) {
     return String(hexOut);
 }
 
-// Comparação em tempo constante para evitar timing attacks
 static bool constantTimeEquals(const String& a, const String& b) {
     if (a.length() != b.length()) return false;
     uint8_t diff = 0;
@@ -61,7 +57,15 @@ static bool constantTimeEquals(const String& a, const String& b) {
     return diff == 0;
 }
 
-// Gera um novo desafio e atualiza a característica TX
+static const char* findUserSecret(const String& userId) {
+    for (int i = 0; i < NUM_BLE_USERS; i++) {
+        if (userId == BLE_USERS[i].id) {
+            return BLE_USERS[i].secret;
+        }
+    }
+    return nullptr;
+}
+
 static void issueNewChallenge() {
     currentNonce = generateHexNonce();
     nonceCreatedAt = millis();
@@ -70,83 +74,110 @@ static void issueNewChallenge() {
     if (pTxCharacteristic != nullptr) {
         pTxCharacteristic->setValue((uint8_t*)currentNonce.c_str(), currentNonce.length());
     }
-    Serial.printf("[BLE-AUTH] Novo desafio gerado: %s\n", currentNonce.c_str());
+    Serial.printf("[BLE-AUTH] Novo desafio gerado (%d bytes): %s\n", currentNonce.length(), currentNonce.c_str());
 }
 
 class LockServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
         deviceConnected = true;
         Serial.println("[BLE] Celular conectado.");
-        issueNewChallenge(); // Prepara o desafio assim que o cliente conecta
+        // Se por acaso não houver nonce ativo (ex: expirou por timeout), gera um agora
+        if (!nonceActive || currentNonce.isEmpty()) {
+            issueNewChallenge();
+        }
     }
 
     void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
         deviceConnected = false;
-        nonceActive = false;
-        currentNonce = "";
-        Serial.println("[BLE] Celular desconectado. Nonce invalidado.");
+        Serial.println("[BLE] Celular desconectado.");
+        // Gera um novo desafio já pronto para a próxima conexão (evita race condition no próximo onConnect)
+        issueNewChallenge();
     }
 };
 
 class LockCharCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
         NimBLEAttValue val = pCharacteristic->getValue();
-        String receivedHmac = "";
+        String payload = "";
         for (size_t i = 0; i < val.length(); i++) {
-            receivedHmac += (char)val[i];
+            payload += (char)val[i];
         }
-        receivedHmac.trim();
-        receivedHmac.toLowerCase();
+        payload.trim();
+        Serial.printf("[BLE-AUTH] Payload recebido (%d bytes): %s\n", payload.length(), payload.c_str());
 
-        // 1. Verifica se existe um desafio ativo e dentro do prazo
-        if (!nonceActive || (millis() - nonceCreatedAt > BLE_NONCE_TTL_MS)) {
-            Serial.println("[BLE-AUTH] Falha: Nonce expirado ou inexistente.");
+        // Formato esperado: usuario_id:hmac_hex
+        int sepIndex = payload.indexOf(':');
+        if (sepIndex <= 0) {
+            Serial.println("[BLE-AUTH] Formato invalido. Esperado usuario_id:hmac");
             nonceActive = false;
-            if (globalAuthCallback != nullptr) globalAuthCallback(false);
-            issueNewChallenge(); // Emite novo desafio para nova tentativa
+            if (globalAuthCallback != nullptr) globalAuthCallback(false, "FORMATO_INVALIDO");
+            issueNewChallenge();
             return;
         }
 
-        // 2. Consome o nonce imediatamente (impede replay)
+        String userId = payload.substring(0, sepIndex);
+        String receivedHmac = payload.substring(sepIndex + 1);
+        userId.trim();
+        receivedHmac.trim();
+        receivedHmac.toLowerCase();
+
+        // 1. Verifica validade temporal do desafio
+        if (!nonceActive || (millis() - nonceCreatedAt > BLE_NONCE_TTL_MS)) {
+            Serial.printf("[BLE-AUTH] Falha (%s): Nonce expirado ou inexistente.\n", userId.c_str());
+            nonceActive = false;
+            if (globalAuthCallback != nullptr) globalAuthCallback(false, userId);
+            issueNewChallenge();
+            return;
+        }
+
+        // 2. Consome o nonce imediatamente
         String usedNonce = currentNonce;
         nonceActive = false;
         currentNonce = "";
 
-        // 3. Calcula e valida o HMAC-SHA256 esperado
-        String expectedHmac = computeHmacSha256(BLE_SHARED_SECRET, usedNonce);
+        // 3. Busca a chave individual do usuario_id
+        const char* userSecret = findUserSecret(userId);
+        if (userSecret == nullptr) {
+            Serial.printf("[BLE-AUTH] Usuario desconhecido: %s\n", userId.c_str());
+            if (globalAuthCallback != nullptr) globalAuthCallback(false, userId);
+            issueNewChallenge();
+            return;
+        }
+
+        // 4. Calcula HMAC-SHA256(userSecret, "usuario_id:nonce")
+        String messageToSign = userId + ":" + usedNonce;
+        String expectedHmac = computeHmacSha256(String(userSecret), messageToSign);
         bool valid = constantTimeEquals(receivedHmac, expectedHmac);
 
         if (valid) {
-            Serial.println("[BLE-AUTH] Assinatura HMAC valida! Acesso autorizado.");
+            Serial.printf("[BLE-AUTH] Assinatura valida para [%s]! Acesso autorizado.\n", userId.c_str());
         } else {
-            Serial.println("[BLE-AUTH] Assinatura HMAC invalida!");
+            Serial.printf("[BLE-AUTH] Assinatura invalida para [%s]!\n", userId.c_str());
         }
 
         if (globalAuthCallback != nullptr) {
-            globalAuthCallback(valid);
+            globalAuthCallback(valid, userId);
         }
 
-        // Emite um novo desafio caso o usuário precise abrir novamente na mesma sessão
         issueNewChallenge();
     }
 };
 
 void BleManager::begin() {
-    Serial.printf("[BLE] Iniciando servidor NimBLE seguro: %s\n", BLE_DEVICE_NAME);
+    Serial.printf("[BLE] Iniciando servidor NimBLE multi-usuario: %s\n", BLE_DEVICE_NAME);
 
     NimBLEDevice::init(BLE_DEVICE_NAME);
+    NimBLEDevice::setMTU(256); // Garante recebimento de payloads maiores que 20/64 bytes
     pServer = NimBLEDevice::createServer();
     pServer->setCallbacks(new LockServerCallbacks());
 
     NimBLEService* pService = pServer->createService(BLE_SERVICE_UUID);
 
-    // Característica TX: celular lê (READ) ou escuta (NOTIFY) o nonce
     pTxCharacteristic = pService->createCharacteristic(
         BLE_CHAR_TX_UUID,
         NIMBLE_PROPERTY::READ
     );
 
-    // Característica RX: celular envia o HMAC-SHA256(secret, nonce)
     pRxCharacteristic = pService->createCharacteristic(
         BLE_CHAR_RX_UUID,
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
@@ -169,7 +200,7 @@ void BleManager::begin() {
 
     pAdvertising->start();
 
-    Serial.println("[BLE] Aguardando conexoes via Bluetooth (Challenge-Response)...");
+    Serial.println("[BLE] Aguardando conexoes via Bluetooth (Multi-Usuario)...");
 }
 
 void BleManager::setOnAuthResult(BleAuthCallback cb) {
@@ -182,7 +213,6 @@ bool BleManager::isConnected() {
 }
 
 void BleManager::update() {
-    // Expira o nonce caso o cliente conecte e demore mais de 15s sem responder
     if (nonceActive && (millis() - nonceCreatedAt > BLE_NONCE_TTL_MS)) {
         nonceActive = false;
         currentNonce = "";

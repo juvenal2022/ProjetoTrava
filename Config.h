@@ -60,12 +60,23 @@ MrY=
 #define OLED_HEIGHT     64
 #define OLED_ADDR       0x3C
 
-// --- Configurações Bluetooth BLE (Challenge-Response) ---
+// --- Configurações Bluetooth BLE (Challenge-Response Multi-Usuário) ---
 #define BLE_DEVICE_NAME   "Trava_ESP32_01"
 #define BLE_SERVICE_UUID  "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define BLE_CHAR_TX_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a7" // Leitura/Notify do Nonce
-#define BLE_CHAR_RX_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8" // Escrita do HMAC
-#define BLE_SHARED_SECRET "ChaveSecretaSuperSegura2026!"          // Mesma chave no app celular
-#define BLE_NONCE_TTL_MS  15000                                   // Validade do desafio: 15s
+#define BLE_CHAR_TX_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a7" // Leitura do Nonce
+#define BLE_CHAR_RX_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8" // Escrita de usuario_id:hmac
+#define BLE_NONCE_TTL_MS  15000
+
+struct BleUser {
+    const char* id;
+    const char* secret;
+};
+
+static const BleUser BLE_USERS[] = {
+    {"admin_01", "ChaveSecretaSuperSegura2026!"},
+    {"prof_silva", "ChaveProfSilva#2026"},
+    {"aluno_joao", "ChaveAlunoJoao@2026"}
+};
+static const int NUM_BLE_USERS = sizeof(BLE_USERS) / sizeof(BLE_USERS[0]);
 
 #endif

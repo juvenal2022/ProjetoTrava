@@ -48,16 +48,16 @@ void handleMqttCommand(String payload) {
     }
 }
 
-// Callback 3: Comando local via Bluetooth BLE (Celular)
-void handleBleCommand(String payload) {
-    if (payload == BLE_TOKEN) {
-        Serial.println("[ACESSO] Token BLE valido! Acionando rele...");
+// Callback 3: Resultado da autenticação Challenge-Response via BLE
+void handleBleAuth(bool authorized) {
+    if (authorized) {
+        Serial.println("[ACESSO] Challenge-Response BLE valido! Acionando rele...");
         hardware.unlock();
-        mqtt.publishEvent("{\"metodo\":\"BLE\",\"status\":\"AUTORIZADO\"}");
+        mqtt.publishEvent("{\"metodo\":\"BLE_HMAC\",\"status\":\"AUTORIZADO\"}");
     } else {
-        Serial.println("[ACESSO] Token BLE invalido!");
-        hardware.showMessage("ACESSO NEGADO", "Token BLE invalido");
-        mqtt.publishEvent("{\"metodo\":\"BLE\",\"status\":\"NEGADO\"}");
+        Serial.println("[ACESSO] Falha na autenticacao BLE!");
+        hardware.showMessage("ACESSO NEGADO", "Falha Auth BLE");
+        mqtt.publishEvent("{\"metodo\":\"BLE_HMAC\",\"status\":\"NEGADO\"}");
     }
 }
 
@@ -68,7 +68,7 @@ void setup() {
 
     hardware.setOnCardRead(handleCardRead);
     mqtt.setOnCommand(handleMqttCommand);
-    ble.setOnCommand(handleBleCommand);
+    ble.setOnAuthResult(handleBleAuth);
 
     hardware.begin();
     Serial.println("[HW] Hardware (Rele, OLED e RFID) inicializado.");

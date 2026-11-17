@@ -3,17 +3,17 @@
 
 #include <Arduino.h>
 
-typedef void (*BleCommandCallback)(String payload);
+typedef void (*BleAuthCallback)(bool authorized);
 
 class BleManager {
 public:
     void begin();
-    void update(); // Reinicia advertising automaticamente após desconexão
-    void setOnCommand(BleCommandCallback cb);
+    void update();
+    void setOnAuthResult(BleAuthCallback cb);
     bool isConnected();
 
 private:
-    BleCommandCallback _onCommand = nullptr;
+    BleAuthCallback _onAuthResult = nullptr;
 };
 
 #endif

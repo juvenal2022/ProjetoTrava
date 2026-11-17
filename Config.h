@@ -5,6 +5,9 @@
 #define WIFI_SSID       "VIVOFIBRA-8D65"
 #define WIFI_PASS       "72238A8D65"
 
+//#define WIFI_SSID       "Fatec_Sala_Maker_2g"
+//#define WIFI_PASS       "Fatec@2026"
+
 #define MQTT_BROKER     "u2101607.ala.us-east-1.emqxsl.com" // Substitua pelo seu broker
 #define MQTT_PORT       8883
 #define MQTT_USER       "jubabdag"
@@ -57,10 +60,12 @@ MrY=
 #define OLED_HEIGHT     64
 #define OLED_ADDR       0x3C
 
-// --- Configurações Bluetooth BLE ---
-#define BLE_DEVICE_NAME "Trava_ESP32_01"
-#define BLE_SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define BLE_CHAR_RX_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-#define BLE_TOKEN        "ABRIR:123456" // Token simples de validação (evita abertura acidental)
+// --- Configurações Bluetooth BLE (Challenge-Response) ---
+#define BLE_DEVICE_NAME   "Trava_ESP32_01"
+#define BLE_SERVICE_UUID  "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define BLE_CHAR_TX_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a7" // Leitura/Notify do Nonce
+#define BLE_CHAR_RX_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8" // Escrita do HMAC
+#define BLE_SHARED_SECRET "ChaveSecretaSuperSegura2026!"          // Mesma chave no app celular
+#define BLE_NONCE_TTL_MS  15000                                   // Validade do desafio: 15s
 
 #endif

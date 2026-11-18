@@ -102,36 +102,53 @@ class LockCharCallbacks : public NimBLECharacteristicCallbacks {
         }
         payload.trim();
 
+        // Ignora silenciosamente gatilho legado "REQ" se algum app antigo enviar
+        if (payload == "REQ") {
+            return;
+        }
+
         Serial.printf("[BLE-AUTH] Payload recebido (%d bytes): %s\n", payload.length(), payload.c_str());
 
-        // Formato esperado: usuario_id:hmac_hex
-        int sepIndex = payload.indexOf(':');
-        if (sepIndex <= 0) {
-            Serial.println("[BLE-AUTH] Formato invalido. Esperado usuario_id:hmac");
+        // Separa os campos por ':'
+        // Login normal:       [0]=userId, [1]=hmac
+        // Admin DEL:          [0]=adminId, [1]="DEL", [2]=targetId, [3]=hmac
+        // Admin ADD:          [0]=adminId, [1]="ADD", [2]=targetId, [3]=targetKey, [4]=hmac
+        String parts[5];
+        int count = 0;
+        int start = 0;
+
+        while (count < 5) {
+            int sep = payload.indexOf(':', start);
+            if (sep == -1) {
+                parts[count++] = payload.substring(start);
+                break;
+            }
+            parts[count++] = payload.substring(start, sep);
+            start = sep + 1;
+        }
+
+        if (count != 2 && count != 4 && count != 5) {
+            Serial.println("[BLE-AUTH] Formato de payload invalido.");
             clearChallenge();
             if (globalAuthCallback != nullptr) globalAuthCallback(false, "FORMATO_INVALIDO");
             return;
         }
 
-        String userId = payload.substring(0, sepIndex);
-        String receivedHmac = payload.substring(sepIndex + 1);
+        String userId = parts[0];
         userId.trim();
-        receivedHmac.trim();
-        receivedHmac.toLowerCase();
 
-       // Passo 2: Verifica se existe desafio ativo e dentro do prazo de 15s
+        // 1. Valida existência e TTL do Nonce
         if (!nonceActive || (millis() - nonceCreatedAt > BLE_NONCE_TTL_MS)) {
-            Serial.printf("[BLE-AUTH] Falha (%s): Desafio nao solicitado ou expirado.\n", userId.c_str());
+            Serial.printf("[BLE-AUTH] Falha (%s): Nonce expirado ou nao solicitado.\n", userId.c_str());
             clearChallenge();
             if (globalAuthCallback != nullptr) globalAuthCallback(false, userId);
             return;
         }
 
-        // Passo 3: Consome e invalida o nonce imediatamente (uso único)
         String usedNonce = currentNonce;
         clearChallenge();
 
-        // Passo 4: Consulta chave na NVS e valida HMAC-SHA256
+        // 2. Busca a chave do solicitante na NVS
         String userSecret = (globalStorage != nullptr) ? globalStorage->getUserSecret(userId) : "";
         if (userSecret.isEmpty()) {
             Serial.printf("[BLE-AUTH] Usuario desconhecido na NVS: %s\n", userId.c_str());
@@ -139,18 +156,76 @@ class LockCharCallbacks : public NimBLECharacteristicCallbacks {
             return;
         }
 
-        String messageToSign = userId + ":" + usedNonce;
-        String expectedHmac = computeHmacSha256(userSecret, messageToSign);
-        bool valid = constantTimeEquals(receivedHmac, expectedHmac);
+        // --- CASO A: Abertura normal (usuario_id:hmac) ---
+        if (count == 2) {
+            String receivedHmac = parts[1];
+            receivedHmac.trim();
+            receivedHmac.toLowerCase();
 
-        if (valid) {
-            Serial.printf("[BLE-AUTH] Assinatura valida para [%s]! Acesso autorizado.\n", userId.c_str());
-        } else {
-            Serial.printf("[BLE-AUTH] Assinatura invalida para [%s]!\n", userId.c_str());
+            String expectedHmac = computeHmacSha256(userSecret, userId + ":" + usedNonce);
+            bool valid = constantTimeEquals(receivedHmac, expectedHmac);
+
+            Serial.printf("[BLE-AUTH] Abertura [%s]: %s\n", userId.c_str(), valid ? "AUTORIZADA" : "NEGADA");
+            if (globalAuthCallback != nullptr) globalAuthCallback(valid, userId);
+            return;
         }
 
-        if (globalAuthCallback != nullptr) {
-            globalAuthCallback(valid, userId);
+        // --- CASO B: Comandos Administrativos (somente admin_01) ---
+        if (userId != BLE_ADMIN_USER_ID) {
+            Serial.printf("[BLE-ADMIN] Permissao negada para [%s]. Apenas %s pode gerenciar usuarios.\n",
+                          userId.c_str(), BLE_ADMIN_USER_ID);
+            if (globalAuthCallback != nullptr) globalAuthCallback(false, userId);
+            return;
+        }
+
+        String action = parts[1];
+        action.trim();
+
+        if (action == "ADD" && count == 5) {
+            String targetId = parts[2];
+            String targetKey = parts[3];
+            String receivedHmac = parts[4];
+            targetId.trim();
+            targetKey.trim();
+            receivedHmac.trim();
+            receivedHmac.toLowerCase();
+
+            String msgToSign = userId + ":ADD:" + targetId + ":" + targetKey + ":" + usedNonce;
+            String expectedHmac = computeHmacSha256(userSecret, msgToSign);
+
+            if (!constantTimeEquals(receivedHmac, expectedHmac)) {
+                Serial.println("[BLE-ADMIN] Assinatura HMAC invalida para ADD!");
+                return;
+            }
+
+            bool ok = globalStorage->addOrUpdateUser(targetId, targetKey);
+            Serial.printf("[BLE-ADMIN] ADD usuario [%s]: %s\n", targetId.c_str(), ok ? "SUCESSO" : "FALHA");
+        } 
+        else if (action == "DEL" && count == 4) {
+            String targetId = parts[2];
+            String receivedHmac = parts[3];
+            targetId.trim();
+            receivedHmac.trim();
+            receivedHmac.toLowerCase();
+
+            if (targetId == BLE_ADMIN_USER_ID) {
+                Serial.println("[BLE-ADMIN] Bloqueado: nao e permitido remover o proprio admin.");
+                return;
+            }
+
+            String msgToSign = userId + ":DEL:" + targetId + ":" + usedNonce;
+            String expectedHmac = computeHmacSha256(userSecret, msgToSign);
+
+            if (!constantTimeEquals(receivedHmac, expectedHmac)) {
+                Serial.println("[BLE-ADMIN] Assinatura HMAC invalida para DEL!");
+                return;
+            }
+
+            bool ok = globalStorage->removeUser(targetId);
+            Serial.printf("[BLE-ADMIN] DEL usuario [%s]: %s\n", targetId.c_str(), ok ? "SUCESSO" : "FALHA");
+        } 
+        else {
+            Serial.println("[BLE-ADMIN] Comando administrativo desconhecido ou malformado.");
         }
     }
 };

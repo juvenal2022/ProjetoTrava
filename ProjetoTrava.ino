@@ -15,7 +15,7 @@ bool bleStarted = false;
 unsigned long bootStartTime = 0;
 const unsigned long BLE_FALLBACK_TIMEOUT_MS = 15000; // 15s de tolerância caso a internet esteja offline
 
-const String AUTHORIZED_UIDS[] = {"37AFF663", "0A16384F"};
+const String AUTHORIZED_UIDS[] = {"37AFF663", "0A16385F"};
 const int NUM_UIDS = 2;
 
 bool isUidAuthorized(const String& uid) {
@@ -35,7 +35,7 @@ void handleCardRead(String uid) {
         mqtt.publishEvent("{\"metodo\":\"RFID\",\"uid\":\"" + uid + "\",\"status\":\"AUTORIZADO\"}");
     } else {
         Serial.println("[ACESSO] Negado! UID nao cadastrado.");
-        hardware.showMessage("ACESSO NEGADO", "UID: " + uid);
+        hardware.showMessage("ACESSO NEGADO", "Utilize um cartao autorizado!");
         mqtt.publishEvent("{\"metodo\":\"RFID\",\"uid\":\"" + uid + "\",\"status\":\"NEGADO\"}");
     }
 }

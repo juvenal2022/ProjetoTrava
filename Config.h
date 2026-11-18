@@ -67,8 +67,9 @@ MrY=
 #define BLE_CHAR_RX_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8" // Escrita de usuario_id:hmac
 #define BLE_NONCE_TTL_MS  15000
 
+#define BLE_ADMIN_USER_ID     "admin_01"
 #define BLE_NVS_NAMESPACE     "ble_users"
 #define BLE_DEFAULT_ADMIN_ID  "admin_01"
-#define BLE_DEFAULT_ADMIN_KEY "ChaveSecretaSuperSegura2026!"
+#define BLE_DEFAULT_ADMIN_KEY "12345678"
 
 #endif

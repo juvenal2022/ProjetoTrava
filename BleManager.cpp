@@ -4,6 +4,7 @@
 #include "mbedtls/md.h"
 #include "esp_system.h"
 
+static UserStorage* globalStorage = nullptr;
 static NimBLEServer* pServer = nullptr;
 static NimBLECharacteristic* pTxCharacteristic = nullptr;
 static NimBLECharacteristic* pRxCharacteristic = nullptr;
@@ -57,15 +58,6 @@ static bool constantTimeEquals(const String& a, const String& b) {
     return diff == 0;
 }
 
-static const char* findUserSecret(const String& userId) {
-    for (int i = 0; i < NUM_BLE_USERS; i++) {
-        if (userId == BLE_USERS[i].id) {
-            return BLE_USERS[i].secret;
-        }
-    }
-    return nullptr;
-}
-
 static void issueNewChallenge() {
     currentNonce = generateHexNonce();
     nonceCreatedAt = millis();
@@ -73,25 +65,31 @@ static void issueNewChallenge() {
 
     if (pTxCharacteristic != nullptr) {
         pTxCharacteristic->setValue((uint8_t*)currentNonce.c_str(), currentNonce.length());
+        pTxCharacteristic->notify();
     }
     Serial.printf("[BLE-AUTH] Novo desafio gerado (%d bytes): %s\n", currentNonce.length(), currentNonce.c_str());
+}
+
+// Limpa o desafio da memória e do buffer GATT
+static void clearChallenge() {
+    nonceActive = false;
+    currentNonce = "";
+    if (pTxCharacteristic != nullptr) {
+        pTxCharacteristic->setValue((uint8_t*)"", 0);
+    }
 }
 
 class LockServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
         deviceConnected = true;
         Serial.println("[BLE] Celular conectado.");
-        // Se por acaso não houver nonce ativo (ex: expirou por timeout), gera um agora
-        if (!nonceActive || currentNonce.isEmpty()) {
-            issueNewChallenge();
-        }
+        clearChallenge();
     }
 
     void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
         deviceConnected = false;
         Serial.println("[BLE] Celular desconectado.");
-        // Gera um novo desafio já pronto para a próxima conexão (evita race condition no próximo onConnect)
-        issueNewChallenge();
+        clearChallenge();
     }
 };
 
@@ -103,15 +101,15 @@ class LockCharCallbacks : public NimBLECharacteristicCallbacks {
             payload += (char)val[i];
         }
         payload.trim();
+
         Serial.printf("[BLE-AUTH] Payload recebido (%d bytes): %s\n", payload.length(), payload.c_str());
 
         // Formato esperado: usuario_id:hmac_hex
         int sepIndex = payload.indexOf(':');
         if (sepIndex <= 0) {
             Serial.println("[BLE-AUTH] Formato invalido. Esperado usuario_id:hmac");
-            nonceActive = false;
+            clearChallenge();
             if (globalAuthCallback != nullptr) globalAuthCallback(false, "FORMATO_INVALIDO");
-            issueNewChallenge();
             return;
         }
 
@@ -121,32 +119,28 @@ class LockCharCallbacks : public NimBLECharacteristicCallbacks {
         receivedHmac.trim();
         receivedHmac.toLowerCase();
 
-        // 1. Verifica validade temporal do desafio
+       // Passo 2: Verifica se existe desafio ativo e dentro do prazo de 15s
         if (!nonceActive || (millis() - nonceCreatedAt > BLE_NONCE_TTL_MS)) {
-            Serial.printf("[BLE-AUTH] Falha (%s): Nonce expirado ou inexistente.\n", userId.c_str());
-            nonceActive = false;
+            Serial.printf("[BLE-AUTH] Falha (%s): Desafio nao solicitado ou expirado.\n", userId.c_str());
+            clearChallenge();
             if (globalAuthCallback != nullptr) globalAuthCallback(false, userId);
-            issueNewChallenge();
             return;
         }
 
-        // 2. Consome o nonce imediatamente
+        // Passo 3: Consome e invalida o nonce imediatamente (uso único)
         String usedNonce = currentNonce;
-        nonceActive = false;
-        currentNonce = "";
+        clearChallenge();
 
-        // 3. Busca a chave individual do usuario_id
-        const char* userSecret = findUserSecret(userId);
-        if (userSecret == nullptr) {
-            Serial.printf("[BLE-AUTH] Usuario desconhecido: %s\n", userId.c_str());
+        // Passo 4: Consulta chave na NVS e valida HMAC-SHA256
+        String userSecret = (globalStorage != nullptr) ? globalStorage->getUserSecret(userId) : "";
+        if (userSecret.isEmpty()) {
+            Serial.printf("[BLE-AUTH] Usuario desconhecido na NVS: %s\n", userId.c_str());
             if (globalAuthCallback != nullptr) globalAuthCallback(false, userId);
-            issueNewChallenge();
             return;
         }
 
-        // 4. Calcula HMAC-SHA256(userSecret, "usuario_id:nonce")
         String messageToSign = userId + ":" + usedNonce;
-        String expectedHmac = computeHmacSha256(String(userSecret), messageToSign);
+        String expectedHmac = computeHmacSha256(userSecret, messageToSign);
         bool valid = constantTimeEquals(receivedHmac, expectedHmac);
 
         if (valid) {
@@ -158,12 +152,24 @@ class LockCharCallbacks : public NimBLECharacteristicCallbacks {
         if (globalAuthCallback != nullptr) {
             globalAuthCallback(valid, userId);
         }
-
-        issueNewChallenge();
     }
 };
 
-void BleManager::begin() {
+class TxCharCallbacks : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+        // Gera o desafio fresco no exato milissegundo em que o celular solicita a leitura
+        currentNonce = generateHexNonce();
+        nonceCreatedAt = millis();
+        nonceActive = true;
+
+        pCharacteristic->setValue((uint8_t*)currentNonce.c_str(), currentNonce.length());
+        Serial.printf("[BLE-AUTH] Desafio gerado sob demanda no onRead (%d bytes): %s\n",
+                      currentNonce.length(), currentNonce.c_str());
+    }
+};
+
+void BleManager::begin(UserStorage* storage) {
+    globalStorage = storage;
     Serial.printf("[BLE] Iniciando servidor NimBLE multi-usuario: %s\n", BLE_DEVICE_NAME);
 
     NimBLEDevice::init(BLE_DEVICE_NAME);
@@ -177,6 +183,7 @@ void BleManager::begin() {
         BLE_CHAR_TX_UUID,
         NIMBLE_PROPERTY::READ
     );
+    pTxCharacteristic->setCallbacks(new TxCharCallbacks());
 
     pRxCharacteristic = pService->createCharacteristic(
         BLE_CHAR_RX_UUID,
@@ -185,7 +192,6 @@ void BleManager::begin() {
     pRxCharacteristic->setCallbacks(new LockCharCallbacks());
 
     pService->start();
-    issueNewChallenge();
 
     NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
 
@@ -214,9 +220,8 @@ bool BleManager::isConnected() {
 
 void BleManager::update() {
     if (nonceActive && (millis() - nonceCreatedAt > BLE_NONCE_TTL_MS)) {
-        nonceActive = false;
-        currentNonce = "";
-        Serial.println("[BLE-AUTH] Nonce expirado por timeout.");
+        clearChallenge();
+        Serial.println("[BLE-AUTH] Desafio expirado por inatividade do cliente.");
     }
 
     if (!deviceConnected && oldDeviceConnected) {

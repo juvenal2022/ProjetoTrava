@@ -1,8 +1,11 @@
+#include <ArduinoJson.h>
+#include "UserStorage.h"
 #include "Config.h"
 #include "HardwareControl.h"
 #include "MqttManager.h"
 #include "BleManager.h"
 
+UserStorage userStorage;
 HardwareControl hardware;
 MqttManager mqtt;
 BleManager ble;
@@ -39,12 +42,42 @@ void handleCardRead(String uid) {
 
 // Callback 2: Comando remoto via Broker MQTT
 void handleMqttCommand(String payload) {
-    if (payload.indexOf("ABRIR") >= 0) {
-        Serial.println("[ACESSO] Comando remoto 'ABRIR' recebido! Acionando rele...");
+    String cmd = payload;
+    cmd.trim();
+
+    // 1. Comando simples legado de abertura remota
+    if (cmd == "ABRIR") {
+        Serial.println("[MQTT] Comando remoto ABRIR recebido!");
         hardware.unlock();
-        mqtt.publishEvent("{\"metodo\":\"MQTT\",\"status\":\"AUTORIZADO\"}");
-    } else {
-        Serial.printf("[COMANDO] Payload desconhecido ignorado: %s\n", payload.c_str());
+        mqtt.publishEvent("{\"metodo\":\"MQTT_REMOTO\",\"status\":\"AUTORIZADO\"}");
+        return;
+    }
+
+    // 2. Comandos JSON administrativos (NVS)
+    if (cmd.startsWith("{")) {
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, cmd);
+        if (err) {
+            mqtt.publishEvent("{\"metodo\":\"NVS_ADMIN\",\"status\":\"ERRO_JSON\"}");
+            return;
+        }
+
+        String acao = doc["acao"] | "";
+        String usuario = doc["usuario"] | "";
+        String chave = doc["chave"] | "";
+
+        if (acao == "ADD_USER" || acao == "UPDATE_USER") {
+            bool ok = userStorage.addOrUpdateUser(usuario, chave);
+            mqtt.publishEvent("{\"metodo\":\"NVS_ADMIN\",\"acao\":\"" + acao + "\",\"usuario\":\"" + usuario + "\",\"sucesso\":" + String(ok ? "true" : "false") + "}");
+        } 
+        else if (acao == "DEL_USER") {
+            bool ok = userStorage.removeUser(usuario);
+            mqtt.publishEvent("{\"metodo\":\"NVS_ADMIN\",\"acao\":\"DEL_USER\",\"usuario\":\"" + usuario + "\",\"sucesso\":" + String(ok ? "true" : "false") + "}");
+        } 
+        else if (acao == "LIST_USERS") {
+            String listaJson = userStorage.listUsersJson();
+            mqtt.publishEvent("{\"metodo\":\"NVS_ADMIN\",\"acao\":\"LIST_USERS\",\"usuarios\":" + listaJson + "}");
+        }
     }
 }
 
@@ -74,7 +107,8 @@ void setup() {
     Serial.println("[HW] Hardware (Rele, OLED e RFID) inicializado.");
 
     mqtt.begin();
-    ble.begin();
+    userStorage.begin();
+    ble.begin(&userStorage);
 }
 
 void loop() {
@@ -85,7 +119,7 @@ void loop() {
     if (!bleStarted) {
         if (mqtt.isConnected() || (millis() - bootStartTime >= BLE_FALLBACK_TIMEOUT_MS)) {
             Serial.printf("[MEM] Heap livre antes do BLE: %d bytes\n", ESP.getFreeHeap());
-            ble.begin();
+            ble.begin(&userStorage);
             bleStarted = true;
         }
     } else {

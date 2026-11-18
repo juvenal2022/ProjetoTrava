@@ -53,11 +53,11 @@ void HardwareControl::showMessage(const String& line1, const String& line2) {
     display.setTextColor(SSD1306_WHITE);
     
     display.setTextSize(1);
-    display.setCursor(0, 12);
+    display.setCursor(0, 0);
     display.println(line1);
     
     if (line2.length() > 0) {
-        display.setCursor(0, 34);
+        display.setCursor(0, 30);
         display.println(line2);
     }
     display.display();

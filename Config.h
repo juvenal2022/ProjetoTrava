@@ -67,16 +67,8 @@ MrY=
 #define BLE_CHAR_RX_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8" // Escrita de usuario_id:hmac
 #define BLE_NONCE_TTL_MS  15000
 
-struct BleUser {
-    const char* id;
-    const char* secret;
-};
-
-static const BleUser BLE_USERS[] = {
-    {"admin_01", "ChaveSecretaSuperSegura2026!"},
-    {"prof_silva", "ChaveProfSilva#2026"},
-    {"aluno_joao", "ChaveAlunoJoao@2026"}
-};
-static const int NUM_BLE_USERS = sizeof(BLE_USERS) / sizeof(BLE_USERS[0]);
+#define BLE_NVS_NAMESPACE     "ble_users"
+#define BLE_DEFAULT_ADMIN_ID  "admin_01"
+#define BLE_DEFAULT_ADMIN_KEY "ChaveSecretaSuperSegura2026!"
 
 #endif

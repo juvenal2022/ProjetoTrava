@@ -4,6 +4,15 @@
 #include "mbedtls/md.h"
 #include "esp_system.h"
 
+static NimBLECharacteristic* pStatusCharacteristic = nullptr;
+
+static void setBleStatus(const char* status) {
+    if (pStatusCharacteristic != nullptr) {
+        pStatusCharacteristic->setValue((uint8_t*)status, strlen(status));
+        pStatusCharacteristic->notify(); // Empurra o resultado diretamente ao app Flutter
+    }
+}
+
 static UserStorage* globalStorage = nullptr;
 static NimBLEServer* pServer = nullptr;
 static NimBLECharacteristic* pTxCharacteristic = nullptr;
@@ -82,8 +91,9 @@ static void clearChallenge() {
 class LockServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
         deviceConnected = true;
-        Serial.println("[BLE] Celular conectado.");
         clearChallenge();
+        setBleStatus("PENDING");
+        Serial.println("[BLE] Celular conectado.");
     }
 
     void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
@@ -139,6 +149,7 @@ class LockCharCallbacks : public NimBLECharacteristicCallbacks {
 
         // 1. Valida existência e TTL do Nonce
         if (!nonceActive || (millis() - nonceCreatedAt > BLE_NONCE_TTL_MS)) {
+            setBleStatus("UNAUTHORIZED");
             Serial.printf("[BLE-AUTH] Falha (%s): Nonce expirado ou nao solicitado.\n", userId.c_str());
             clearChallenge();
             if (globalAuthCallback != nullptr) globalAuthCallback(false, userId);
@@ -151,6 +162,7 @@ class LockCharCallbacks : public NimBLECharacteristicCallbacks {
         // 2. Busca a chave do solicitante na NVS
         String userSecret = (globalStorage != nullptr) ? globalStorage->getUserSecret(userId) : "";
         if (userSecret.isEmpty()) {
+            setBleStatus("UNAUTHORIZED");
             Serial.printf("[BLE-AUTH] Usuario desconhecido na NVS: %s\n", userId.c_str());
             if (globalAuthCallback != nullptr) globalAuthCallback(false, userId);
             return;
@@ -165,6 +177,7 @@ class LockCharCallbacks : public NimBLECharacteristicCallbacks {
             String expectedHmac = computeHmacSha256(userSecret, userId + ":" + usedNonce);
             bool valid = constantTimeEquals(receivedHmac, expectedHmac);
 
+            setBleStatus(valid ? "UNLOCK_OK" : "UNAUTHORIZED");
             Serial.printf("[BLE-AUTH] Abertura [%s]: %s\n", userId.c_str(), valid ? "AUTORIZADA" : "NEGADA");
             if (globalAuthCallback != nullptr) globalAuthCallback(valid, userId);
             return;
@@ -172,8 +185,8 @@ class LockCharCallbacks : public NimBLECharacteristicCallbacks {
 
         // --- CASO B: Comandos Administrativos (somente admin_01) ---
         if (userId != BLE_ADMIN_USER_ID) {
-            Serial.printf("[BLE-ADMIN] Permissao negada para [%s]. Apenas %s pode gerenciar usuarios.\n",
-                          userId.c_str(), BLE_ADMIN_USER_ID);
+            Serial.printf("[BLE-ADMIN] Permissao negada para [%s]. Apenas %s pode gerenciar usuarios.\n", userId.c_str(), BLE_ADMIN_USER_ID);
+            setBleStatus("UNAUTHORIZED");
             if (globalAuthCallback != nullptr) globalAuthCallback(false, userId);
             return;
         }
@@ -194,11 +207,13 @@ class LockCharCallbacks : public NimBLECharacteristicCallbacks {
             String expectedHmac = computeHmacSha256(userSecret, msgToSign);
 
             if (!constantTimeEquals(receivedHmac, expectedHmac)) {
+                setBleStatus("UNAUTHORIZED");
                 Serial.println("[BLE-ADMIN] Assinatura HMAC invalida para ADD!");
                 return;
             }
 
             bool ok = globalStorage->addOrUpdateUser(targetId, targetKey);
+            setBleStatus(ok ? "ADD_OK" : "ADD_ERR");
             Serial.printf("[BLE-ADMIN] ADD usuario [%s]: %s\n", targetId.c_str(), ok ? "SUCESSO" : "FALHA");
         } 
         else if (action == "DEL" && count == 4) {
@@ -210,6 +225,7 @@ class LockCharCallbacks : public NimBLECharacteristicCallbacks {
 
             if (targetId == BLE_ADMIN_USER_ID) {
                 Serial.println("[BLE-ADMIN] Bloqueado: nao e permitido remover o proprio admin.");
+                setBleStatus("DEL_ERR");
                 return;
             }
 
@@ -217,14 +233,17 @@ class LockCharCallbacks : public NimBLECharacteristicCallbacks {
             String expectedHmac = computeHmacSha256(userSecret, msgToSign);
 
             if (!constantTimeEquals(receivedHmac, expectedHmac)) {
+                setBleStatus("UNAUTHORIZED");
                 Serial.println("[BLE-ADMIN] Assinatura HMAC invalida para DEL!");
                 return;
             }
 
             bool ok = globalStorage->removeUser(targetId);
+            setBleStatus(ok ? "DEL_OK" : "DEL_ERR");
             Serial.printf("[BLE-ADMIN] DEL usuario [%s]: %s\n", targetId.c_str(), ok ? "SUCESSO" : "FALHA");
         } 
         else {
+            setBleStatus("UNAUTHORIZED");
             Serial.println("[BLE-ADMIN] Comando administrativo desconhecido ou malformado.");
         }
     }
@@ -265,6 +284,12 @@ void BleManager::begin(UserStorage* storage) {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
     );
     pRxCharacteristic->setCallbacks(new LockCharCallbacks());
+
+    pStatusCharacteristic = pService->createCharacteristic(
+        BLE_CHAR_STATUS_UUID,
+        NIMBLE_PROPERTY::READ| NIMBLE_PROPERTY::NOTIFY
+    );
+    setBleStatus("IDLE");
 
     pService->start();
 

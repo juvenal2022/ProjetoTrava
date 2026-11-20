@@ -2,11 +2,11 @@
 #define CONFIG_H
 
 // --- Configurações de Rede e Broker ---
-#define WIFI_SSID       "VIVOFIBRA-8D65"
-#define WIFI_PASS       "72238A8D65"
+//#define WIFI_SSID       "VIVOFIBRA-8D65"
+//#define WIFI_PASS       "72238A8D65"
 
-//#define WIFI_SSID       "Fatec_Sala_Maker_2g"
-//#define WIFI_PASS       "Fatec@2026"
+#define WIFI_SSID       "Fatec_Sala_Maker_2g"
+#define WIFI_PASS       "Fatec@2026"
 
 #define MQTT_BROKER     "u2101607.ala.us-east-1.emqxsl.com" // Substitua pelo seu broker
 #define MQTT_PORT       8883
@@ -65,6 +65,7 @@ MrY=
 #define BLE_SERVICE_UUID  "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define BLE_CHAR_TX_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a7" // Leitura do Nonce
 #define BLE_CHAR_RX_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8" // Escrita de usuario_id:hmac
+#define BLE_CHAR_STATUS_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 #define BLE_NONCE_TTL_MS  15000
 
 #define BLE_ADMIN_USER_ID     "admin_01"
